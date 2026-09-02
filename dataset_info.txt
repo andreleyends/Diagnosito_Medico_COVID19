@@ -1,0 +1,33 @@
+COVID-19 Binary Classification Dataset
+========================================
+
+Dataset original (antes del balanceo):
+Total Images: 21,165
+- COVID Positive: 3,616 (17.1%)
+- COVID Negative: 17,549 (82.9%)
+
+Split original (70-15-15):
+- Train: 14,815 (Pos 2,531 / Neg 12,284)
+- Validation: 3,175 (Pos 543 / Neg 2,632)
+- Test: 3,175 (Pos 542 / Neg 2,633)
+
+========================================
+DATASET BALANCEADO (50/50) - Sep 2026
+========================================
+Se igualaron las clases a 50/50 muestreando aleatoriamente
+los negativos sobrantes. Los negativos descartados se movieron
+a las carpetas train_not_used/ y test_not_used/.
+
+Entrenamiento:
+- COVID Positive: 2,531
+- COVID Negative: 2,531
+- Total: 5,062
+
+Test:
+- COVID Positive: 542
+- COVID Negative: 542
+- Total: 1,084
+
+Validacion (sin cambios):
+- COVID Positive: 543
+- COVID Negative: 2,632
