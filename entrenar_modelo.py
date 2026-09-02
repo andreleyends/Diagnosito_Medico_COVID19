@@ -24,11 +24,16 @@ except ImportError:
     except ImportError:
         MobileNet_V2_Weights = None
 
-from sklearn.linear_model import LogisticRegression
-from sklearn.metrics import (
-    confusion_matrix, accuracy_score, precision_score,
-    recall_score, f1_score, roc_curve, auc,
-    classification_report
+from logistic_regression import (
+    LogisticRegressionManual,
+    confusion_matrix,
+    accuracy_score,
+    precision_score,
+    recall_score,
+    f1_score,
+    specificity_score,
+    roc_curve,
+    auc,
 )
 
 import warnings
@@ -164,15 +169,15 @@ def save_roc_curve(y_true, y_prob, save_path):
     return roc_auc
 
 
-def save_metrics_report(cm, accuracy, precision, recall, f1, roc_auc, save_path):
+def save_metrics_report(cm, accuracy, precision, recall, specificity, f1, roc_auc, save_path):
     tn, fp, fn, tp = cm.ravel()
-    specificity = tn / (tn + fp) * 100 if (tn + fp) > 0 else 0.0
     report = f"""
 {'='*60}
    REPORTE DE MÉTRICAS - COVID-19 X-ray Classifier
 {'='*60}
 
 MODELO: Regresión Logística + MobileNetV2 (Feature Extractor)
+       (Regresión logística implementada desde cero, sin librerías ML)
 
 --- Matriz de Confusión ---
   True Negatives  (VN): {tn}
@@ -189,7 +194,7 @@ MODELO: Regresión Logística + MobileNetV2 (Feature Extractor)
 
 --- Interpretación Clínica ---
   Sensibilidad (Recall): {recall*100:.2f}% → Capacidad de detectar COVID positivos
-  Especificidad: {specificity:.2f}% → Capacidad de detectar COVID negativos
+  Especificidad: {specificity*100:.2f}% → Capacidad de detectar COVID negativos
   Precisión: {precision*100:.2f}% → De los predichos positivos, cuántos lo son realmente
 
 {'='*60}
@@ -223,12 +228,12 @@ def main():
     train_features = extract_features(feature_extractor, train_images)
     print(f"  Features extraídas: {train_features.shape}")
 
-    # 4. Entrenar Regresión Logística
-    print("\n[4/6] Entrenando Regresión Logística...")
-    log_reg = LogisticRegression(
-        max_iter=1000,
-        solver='lbfgs',
-        C=1.0,
+    # 4. Entrenar Regresión Logística (implementación manual)
+    print("\n[4/6] Entrenando Regresión Logística (implementada desde cero)...")
+    log_reg = LogisticRegressionManual(
+        lr=0.1,
+        epochs=30,
+        batch_size=64,
         random_state=42
     )
     log_reg.fit(train_features, train_labels)
@@ -236,7 +241,7 @@ def main():
 
     # Guardar modelo inmediatamente después de entrenar (resiliente a errores posteriores)
     modelo_data = {
-        'log_reg': log_reg,
+        'model': log_reg,
         'feature_extractor': feature_extractor.cpu(),
         'clases': CLASES,
         'img_size': IMG_SIZE,
@@ -246,10 +251,9 @@ def main():
     joblib.dump(modelo_data, MODEL_PATH)
     print(f"  Modelo (parcial) guardado en: {MODEL_PATH}")
 
-    # Guardar coeficientes más relevantes
-    coefs = log_reg.coef_[0]
+    # Guardar coeficientes más relevantes (pesos w de la regresión manual)
+    coefs = log_reg.weights_
     top_pos_idx = np.argsort(coefs)[-10:][::-1]
-    top_neg_idx = np.argsort(coefs)[:10]
     print(f"\n  Top 10 features más influyentes para POSITIVO:")
     for idx in top_pos_idx:
         print(f"    Feature {idx}: peso = {coefs[idx]:.6f}")
@@ -262,14 +266,15 @@ def main():
     test_features = extract_features(feature_extractor, test_images)
 
     y_pred = log_reg.predict(test_features)
-    y_prob = log_reg.predict_proba(test_features)[:, 1]
+    y_prob = log_reg.predict_proba(test_features)
 
     accuracy = accuracy_score(test_labels, y_pred)
     precision = precision_score(test_labels, y_pred)
     recall = recall_score(test_labels, y_pred)
     f1 = f1_score(test_labels, y_pred)
+    specificity = specificity_score(test_labels, y_pred)
 
-    print(f"\n  --- Métricas en Test ---")
+    print(f"\n  --- Métricas en Test (implementación manual) ---")
     print(f"  Accuracy:  {accuracy:.4f}")
     print(f"  Precision: {precision:.4f}")
     print(f"  Recall:    {recall:.4f}")
@@ -281,17 +286,20 @@ def main():
                                os.path.join(RESULTS_DIR, 'matriz_confusion.png'))
     roc_auc = save_roc_curve(test_labels, y_prob,
                              os.path.join(RESULTS_DIR, 'curva_roc.png'))
-    save_metrics_report(cm, accuracy, precision, recall, f1, roc_auc,
+    save_metrics_report(cm, accuracy, precision, recall, specificity, f1, roc_auc,
                         os.path.join(RESULTS_DIR, 'metricas_reporte.txt'))
 
     # Guardar modelo completo
     modelo_data = {
-        'log_reg': log_reg,
+        'model': log_reg,
         'feature_extractor': feature_extractor.cpu(),
         'clases': CLASES,
         'img_size': IMG_SIZE,
         'roc_auc': roc_auc,
         'accuracy': accuracy,
+        'precision': precision,
+        'recall': recall,
+        'f1': f1,
     }
     joblib.dump(modelo_data, MODEL_PATH)
     print(f"\n  Modelo guardado en: {MODEL_PATH}")
