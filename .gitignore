@@ -17,3 +17,6 @@ __pycache__/
 # Logs temporales
 *.log
 entrenamiento_error.txt
+
+# Archivo de contexto de la sesion (no se sube)
+contexto.md
