@@ -5,10 +5,6 @@ import numpy as np
 from PIL import Image
 from flask import Flask, request, jsonify, render_template_string
 
-import torch
-import torchvision.transforms as transforms
-from torchvision import models
-
 from logistic_regression import LogisticRegressionManual, sigmoid
 
 import warnings
@@ -20,36 +16,46 @@ MODEL_PATH = os.path.join(BASE_DIR, 'modelo_covid.pkl')
 app = Flask(__name__)
 
 
-# ---------------- Carga del modelo ----------------
-def load_model():
+# ---------------- Carga lazy del modelo ----------------
+_model = None
+_feature_extractor = None
+_model_info = None
+_transform = None
+
+
+def _ensure_loaded():
+    global _model, _feature_extractor, _model_info, _transform
+    if _model is not None:
+        return
+
+    import torch
+    import torchvision.transforms as transforms
+
+    _transform = transforms.Compose([
+        transforms.Resize((224, 224)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                             std=[0.229, 0.224, 0.225])
+    ])
+
     if not os.path.exists(MODEL_PATH):
-        return None, None, None
+        return
+
     modelo_data = joblib.load(MODEL_PATH)
-    model = modelo_data['model']          # LogisticRegressionManual
-    feature_extractor = modelo_data['feature_extractor']
-    feature_extractor.eval()
-    return model, feature_extractor, modelo_data
-
-
-# Cargar al importar la app (una sola vez, para gunicorn)
-MODEL, FEATURE_EXTRACTOR, MODEL_INFO = load_model()
-
-
-TRANSFORM = transforms.Compose([
-    transforms.Resize((224, 224)),
-    transforms.ToTensor(),
-    transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                         std=[0.229, 0.224, 0.225])
-])
+    _model = modelo_data['model']
+    _feature_extractor = modelo_data['feature_extractor']
+    _feature_extractor.eval()
+    _model_info = modelo_data
 
 
 def preprocess_image(image):
     img_rgb = image.convert('RGB')
-    img_tensor = TRANSFORM(img_rgb)
+    img_tensor = _transform(img_rgb)
     return img_tensor.unsqueeze(0)
 
 
 def extract_features(model, img_tensor):
+    import torch
     device = next(model.parameters()).device
     img_tensor = img_tensor.to(device)
     with torch.no_grad():
@@ -59,10 +65,10 @@ def extract_features(model, img_tensor):
 
 def predict_image(image):
     """Devuelve (prediction: 0 o 1, prob_covid: float, logit: float)."""
+    _ensure_loaded()
     img_tensor = preprocess_image(image)
-    features = extract_features(FEATURE_EXTRACTOR, img_tensor)
-    # Logit z = w·x + b (con normalizacion ya incluida en el modelo)
-    logit = float(MODEL.decision_function(features)[0])
+    features = extract_features(_feature_extractor, img_tensor)
+    logit = float(_model.decision_function(features)[0])
     prob_covid = float(sigmoid(logit))
     prediction = int((prob_covid >= 0.5))
     return prediction, prob_covid, logit
@@ -459,7 +465,8 @@ HTML_PAGE = """
 # ---------------- Rutas ----------------
 @app.route('/', methods=['GET'])
 def index():
-    if MODEL_INFO is None:
+    _ensure_loaded()
+    if _model_info is None:
         return "<h3>Modelo no encontrado. Ejecuta entrenar_modelo.py primero.</h3>", 500
 
     def pct(v):
@@ -467,11 +474,11 @@ def index():
 
     return render_template_string(
         HTML_PAGE,
-        accuracy=pct(MODEL_INFO.get('accuracy', 0)),
-        precision=pct(MODEL_INFO.get('precision', 0)),
-        recall=pct(MODEL_INFO.get('recall', 0)),
-        f1=pct(MODEL_INFO.get('f1', 0)),
-        roc_auc=pct(MODEL_INFO.get('roc_auc', 0)),
+        accuracy=pct(_model_info.get('accuracy', 0)),
+        precision=pct(_model_info.get('precision', 0)),
+        recall=pct(_model_info.get('recall', 0)),
+        f1=pct(_model_info.get('f1', 0)),
+        roc_auc=pct(_model_info.get('roc_auc', 0)),
     )
 
 
