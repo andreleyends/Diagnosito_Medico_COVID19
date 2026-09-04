@@ -3,7 +3,7 @@ services:
     name: covid-xray-classifier
     runtime: python
     plan: free
-    buildCommand: "pip install -r requirements.txt"
+    buildCommand: "pip install --extra-index-url https://download.pytorch.org/whl/cpu -r requirements.txt"
     startCommand: "gunicorn app:app --workers 1 --threads 2 --timeout 120"
     healthCheckPath: /
     envVars:

@@ -9,7 +9,7 @@ import torch
 import torchvision.transforms as transforms
 from torchvision import models
 
-from logistic_regression import LogisticRegressionManual
+from logistic_regression import LogisticRegressionManual, sigmoid
 
 import warnings
 warnings.filterwarnings('ignore')
@@ -58,13 +58,14 @@ def extract_features(model, img_tensor):
 
 
 def predict_image(image):
-    """Devuelve (prediction: 0 o 1, prob_covid: float)."""
+    """Devuelve (prediction: 0 o 1, prob_covid: float, logit: float)."""
     img_tensor = preprocess_image(image)
     features = extract_features(FEATURE_EXTRACTOR, img_tensor)
-    # La regresion manual devuelve P(y=1) como array 1D
-    prob_covid = float(MODEL.predict_proba(features)[0])
+    # Logit z = w·x + b (con normalizacion ya incluida en el modelo)
+    logit = float(MODEL.decision_function(features)[0])
+    prob_covid = float(sigmoid(logit))
     prediction = int((prob_covid >= 0.5))
-    return prediction, prob_covid
+    return prediction, prob_covid, logit
 
 
 # ---------------- HTML (pagina principal) ----------------
@@ -99,7 +100,7 @@ HTML_PAGE = """
         .subtitle { text-align: center; color: #566073; margin-bottom: 28px; font-size: 15px; }
         .metrics {
             display: grid;
-            grid-template-columns: repeat(4, 1fr);
+            grid-template-columns: repeat(5, 1fr);
             gap: 12px;
             margin-bottom: 28px;
         }
@@ -164,6 +165,48 @@ HTML_PAGE = """
             font-size: 13px;
             color: #566073;
         }
+        #sigmoid-section {
+            margin-top: 24px;
+            display: none;
+            background: #ffffff;
+            border: 1px solid #e2e5ea;
+            border-radius: 12px;
+            padding: 16px;
+        }
+        #sigmoid-section h3 {
+            font-size: 16px;
+            color: #0e1117;
+            margin-bottom: 12px;
+            text-align: center;
+        }
+        #sigmoidChart {
+            width: 100%;
+            height: auto;
+            display: block;
+            margin: 0 auto;
+        }
+        .sigmoid-metrics {
+            margin-top: 12px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            justify-content: center;
+        }
+        .sigmoid-metric {
+            background: #f0f2f6;
+            border-radius: 6px;
+            padding: 6px 12px;
+            font-size: 12px;
+            color: #0e1117;
+        }
+        .sigmoid-metric .sm-label { color: #566073; }
+        .sigmoid-metric .sm-value { font-weight: 700; margin-left: 4px; }
+        #sigmoid-legend {
+            margin-top: 8px;
+            font-size: 12px;
+            color: #566073;
+            text-align: center;
+        }
         .loading { text-align: center; font-size: 15px; color: #566073; margin-top: 16px; display: none; }
         .error { margin-top: 16px; background: #ffe0e0; color: #cc0000; padding: 12px; border-radius: 8px; display: none; text-align: center; }
     </style>
@@ -179,6 +222,7 @@ HTML_PAGE = """
             <div class="metric"><div class="label">Precision</div><div class="value">{{ precision }}</div></div>
             <div class="metric"><div class="label">Recall</div><div class="value">{{ recall }}</div></div>
             <div class="metric"><div class="label">F1-Score</div><div class="value">{{ f1 }}</div></div>
+            <div class="metric"><div class="label">ROC-AUC</div><div class="value">{{ roc_auc }}</div></div>
         </div>
 
         <div class="dropzone" id="dropzone" onclick="document.getElementById('fileInput').click()">
@@ -193,6 +237,13 @@ HTML_PAGE = """
         <button class="btn" id="analyzeBtn" onclick="analyze()" disabled>Analizar radiografia</button>
 
         <div id="result"></div>
+
+        <div id="sigmoid-section">
+            <h3>Funcion Sigmoide &sigma;(z) = 1 / (1 + e<sup>-z</sup>)</h3>
+            <canvas id="sigmoidChart" width="640" height="340"></canvas>
+            <div class="sigmoid-metrics" id="sigmoidMetrics"></div>
+            <div id="sigmoid-legend"></div>
+        </div>
 
         <div class="note">
             <strong>Nota:</strong> Este sistema es una herramienta de apoyo diagnostico.
@@ -217,6 +268,7 @@ HTML_PAGE = """
             reader.readAsDataURL(selectedFile);
             analyzeBtn.disabled = false;
             document.getElementById('result').style.display = 'none';
+            document.getElementById('sigmoid-section').style.display = 'none';
         }
     });
 
@@ -228,6 +280,7 @@ HTML_PAGE = """
         loading.style.display = 'block';
         error.style.display = 'none';
         result.style.display = 'none';
+        document.getElementById('sigmoid-section').style.display = 'none';
         analyzeBtn.disabled = true;
 
         const formData = new FormData();
@@ -239,6 +292,7 @@ HTML_PAGE = """
             if (!resp.ok) throw new Error(data.error || 'Error al procesar');
             result.innerHTML = buildResult(data);
             result.style.display = 'block';
+            drawSigmoid(data);
         } catch (err) {
             error.textContent = 'Error: ' + err.message;
             error.style.display = 'block';
@@ -269,6 +323,133 @@ HTML_PAGE = """
                 <div style="margin-top:12px;font-size:13px;">Umbral de decision: 0.50 &middot; Si P(positivo) &ge; 0.5 se clasifica como Positivo</div>
             </div>`;
     }
+
+    // ===== Funcion Sigmoide =====
+    const sigmoid = (z) => 1 / (1 + Math.exp(-z));
+
+    const Z_MIN = -8, Z_MAX = 8;
+
+    function sigmoidMetricsHTML() {
+        // Metricas del modelo inyectadas por el servidor
+        const m = [
+            ['Accuracy', '{{ accuracy }}'],
+            ['Precision', '{{ precision }}'],
+            ['Recall', '{{ recall }}'],
+            ['F1', '{{ f1 }}'],
+            ['ROC-AUC', '{{ roc_auc }}']
+        ];
+        return m.map(([l, v]) =>
+            `<span class="sigmoid-metric"><span class="sm-label">${l}:</span><span class="sm-value">${v}</span></span>`
+        ).join('');
+    }
+
+    function drawSigmoid(data) {
+        const section = document.getElementById('sigmoid-section');
+        const canvas = document.getElementById('sigmoidChart');
+        const ctx = canvas.getContext('2d');
+        const W = canvas.width, H = canvas.height;
+        const padL = 46, padR = 16, padT = 16, padB = 40;
+        const plotW = W - padL - padR;
+        const plotH = H - padT - padB;
+
+        ctx.clearRect(0, 0, W, H);
+
+        // Escalas
+        const xOf = (z) => padL + ((z - Z_MIN) / (Z_MAX - Z_MIN)) * plotW;
+        const yOf = (p) => padT + (1 - p) * plotH;
+
+        // ----- Ejes y rejilla -----
+        ctx.strokeStyle = '#d7dbe3';
+        ctx.lineWidth = 1;
+        // Linea del umbral P=0.5 (z=0)
+        ctx.beginPath();
+        ctx.moveTo(xOf(0), padT);
+        ctx.lineTo(xOf(0), padT + plotH);
+        ctx.stroke();
+        // Linea base P=0 y techo P=1
+        ctx.beginPath();
+        ctx.moveTo(padL, yOf(0)); ctx.lineTo(padL + plotW, yOf(0));
+        ctx.moveTo(padL, yOf(1)); ctx.lineTo(padL + plotW, yOf(1));
+        ctx.strokeStyle = '#c0c6d0';
+        ctx.stroke();
+
+        // Etiquetas eje X
+        ctx.fillStyle = '#566073';
+        ctx.font = '12px Segoe UI';
+        ctx.textAlign = 'center';
+        for (let z = Z_MIN; z <= Z_MAX; z += 2) {
+            ctx.fillText(z, xOf(z), padT + plotH + 18);
+        }
+        // Etiquetas eje Y
+        ctx.textAlign = 'right';
+        for (let p = 0; p <= 1; p += 0.25) {
+            ctx.fillText(p.toFixed(2), padL - 8, yOf(p) + 4);
+        }
+        // Titulos de ejes
+        ctx.fillStyle = '#0e1117';
+        ctx.font = '13px Segoe UI';
+        ctx.fillText('Logit z = w·x + b', padL + plotW / 2, H - 4);
+        ctx.save();
+        ctx.translate(14, padT + plotH / 2);
+        ctx.rotate(-Math.PI / 2);
+        ctx.textAlign = 'center';
+        ctx.fillText('P(COVID)', 0, 0);
+        ctx.restore();
+
+        // ----- La curva sigmoide -----
+        ctx.strokeStyle = '#4b8bff';
+        ctx.lineWidth = 2.5;
+        ctx.beginPath();
+        const steps = 400;
+        for (let i = 0; i <= steps; i++) {
+            const z = Z_MIN + (i / steps) * (Z_MAX - Z_MIN);
+            const p = sigmoid(z);
+            const x = xOf(z), y = yOf(p);
+            if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        }
+        ctx.stroke();
+
+        // ----- Punto de prediccion de esta imagen -----
+        const prob = data.prob_covid;
+        const logit = data.logit != null ? data.logit : Math.log(prob / (1 - prob + 1e-12));
+        const isPos = data.prediction === 1;
+        const px = xOf(logit), py = yOf(prob);
+        const pointColor = isPos ? '#ff4b4b' : '#31b04f';
+
+        // Linea vertical desde el punto
+        ctx.strokeStyle = pointColor;
+        ctx.setLineDash([4, 4]);
+        ctx.lineWidth = 1.5;
+        ctx.beginPath();
+        ctx.moveTo(px, py);
+        ctx.lineTo(px, yOf(0));
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // Punto
+        ctx.beginPath();
+        ctx.arc(px, py, 6, 0, 2 * Math.PI);
+        ctx.fillStyle = pointColor;
+        ctx.fill();
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = '#ffffff';
+        ctx.stroke();
+
+        // Etiqueta del punto
+        ctx.fillStyle = pointColor;
+        ctx.font = 'bold 13px Segoe UI';
+        ctx.textAlign = px > padL + plotW / 2 ? 'right' : 'left';
+        ctx.fillText(`Imagen: z=${logit.toFixed(2)}, P=${(prob * 100).toFixed(1)}%`, px + (px > padL + plotW / 2 ? -10 : 10), py - 10);
+
+        // ----- Metricas del modelo -----
+        document.getElementById('sigmoidMetrics').innerHTML = sigmoidMetricsHTML();
+
+        const legendText = `Punto = prediccion de la imagen subida &middot; Linea punteada vertical = logit (z).
+            ${isPos ? 'Positivo' : 'Negativo'}: a la ${isPos ? 'derecha' : 'izquierda'} del umbral z=0 (P=0.50).`;
+        document.getElementById('sigmoid-legend').innerHTML = legendText;
+
+        section.style.display = 'block';
+    }
 </script>
 </body>
 </html>
@@ -290,6 +471,7 @@ def index():
         precision=pct(MODEL_INFO.get('precision', 0)),
         recall=pct(MODEL_INFO.get('recall', 0)),
         f1=pct(MODEL_INFO.get('f1', 0)),
+        roc_auc=pct(MODEL_INFO.get('roc_auc', 0)),
     )
 
 
@@ -308,12 +490,13 @@ def predict():
         return jsonify({'error': f'Imagen invalida: {e}'}), 400
 
     try:
-        prediction, prob_covid = predict_image(image)
+        prediction, prob_covid, logit = predict_image(image)
         prob_no_covid = 1.0 - prob_covid
         return jsonify({
             'prediction': prediction,
             'prob_covid': prob_covid,
             'prob_no_covid': prob_no_covid,
+            'logit': logit,
             'clase': 'covid_positive' if prediction == 1 else 'covid_negative'
         })
     except Exception as e:
